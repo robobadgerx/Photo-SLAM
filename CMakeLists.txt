@@ -32,6 +32,9 @@ find_package(OpenGL REQUIRED)
 find_package(glm REQUIRED)
 find_package(glfw3 REQUIRED)
 
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(ZeroMQ REQUIRED libzmq)
+
 find_package(realsense2)
 
 set(ORB_SLAM3_SOURCE_DIR "${PROJECT_SOURCE_DIR}/ORB-SLAM3")
@@ -45,7 +48,8 @@ include_directories(
     ${ORB_SLAM3_SOURCE_DIR}/include/CameraModels
     ${ORB_SLAM3_SOURCE_DIR}/Thirdparty/Sophus
     ${EIGEN3_INCLUDE_DIR}
-    ${OPENGL_INCLUDE_DIR})
+    ${OPENGL_INCLUDE_DIR}
+    ${ZeroMQ_INCLUDE_DIRS})
 
 ##################################################################################
 ##  Build the gaussian splatting component libraries to ${PROJECT_SOURCE_DIR}/lib
@@ -224,6 +228,22 @@ add_executable(euroc_stereo examples/euroc_stereo.cpp)
 target_link_libraries(euroc_stereo
     gaussian_viewer    
     gaussian_mapper
+    ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
+
+# Mujoco RGBD
+add_executable(mujoco_rgbd examples/mujoco_rgbd.cpp)
+target_link_libraries(mujoco_rgbd
+    gaussian_viewer    
+    gaussian_mapper
+    ${ZeroMQ_LIBRARIES}
+    ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
+
+# Mujoco Client
+add_executable(mujoco_client examples/mujoco_client.cpp)
+target_link_libraries(mujoco_client
+    gaussian_viewer    
+    gaussian_mapper
+    ${ZeroMQ_LIBRARIES}
     ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
 
 ##################################################################################

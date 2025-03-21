@@ -1,21 +1,3 @@
-/**
- * This file is part of Photo-SLAM
- *
- * Copyright (C) 2023-2024 Longwei Li and Hui Cheng, Sun Yat-sen University.
- * Copyright (C) 2023-2024 Huajian Huang and Sai-Kit Yeung, Hong Kong University of Science and Technology.
- *
- * Photo-SLAM is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
- * License as published by the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * Photo-SLAM is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even
- * the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along with Photo-SLAM.
- * If not, see <http://www.gnu.org/licenses/>.
- */
-
 #include <torch/torch.h>
 
 #include <iostream>
@@ -35,55 +17,73 @@
 #include "include/gaussian_mapper.h"
 #include "viewer/imgui_viewer.h"
 
-void LoadImages(const std::filesystem::path &pathImageDir, std::vector<std::string> &vstrImageFilenamesRGB,
-                std::vector<std::string> &vstrImageFilenamesD);
+#include <zmq.hpp>
+#include <opencv2/opencv.hpp>
+#include <iostream>
+#include <vector>
+
+std::queue<std::pair<cv::Mat, cv::Mat>> imageBuffer;
+std::mutex bufferMutex;
+std::condition_variable bufferCondVar;
+
+const size_t MAX_BUFFER_SIZE = 10; 
+
 void saveTrackingTime(std::vector<float> &vTimesTrack, const std::string &strSavePath);
 void saveGpuPeakMemoryUsage(std::filesystem::path pathSave);
 
+
+void socketReceiver(zmq::context_t& context, zmq::socket_t& socket) {
+    while (true) {
+        zmq::message_t rgb_msg, depth_msg;
+        socket.recv(rgb_msg, zmq::recv_flags::none);
+        socket.recv(depth_msg, zmq::recv_flags::none);
+
+        // Convert RGB data to vector
+        std::vector<uchar> rgb_data(static_cast<uchar*>(rgb_msg.data()), 
+                                    static_cast<uchar*>(rgb_msg.data()) + rgb_msg.size());
+        cv::Mat imRGB = cv::imdecode(rgb_data, cv::IMREAD_COLOR);
+
+        // Convert Depth data to vector
+        std::vector<uchar> depth_data(static_cast<uchar*>(depth_msg.data()), 
+                                      static_cast<uchar*>(depth_msg.data()) + depth_msg.size());
+        cv::Mat imD = cv::imdecode(depth_data, cv::IMREAD_UNCHANGED); // Ensure 16-bit depth
+
+        if (imRGB.empty() || imD.empty()) {
+            std::cerr << "Error: Image decoding failed!\n";
+            continue;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(bufferMutex);
+            if (imageBuffer.size() >= MAX_BUFFER_SIZE) {
+                // Discard the oldest frame if the buffer is too long
+                imageBuffer.pop();
+            }
+            imageBuffer.push(std::make_pair(imRGB, imD));
+        }
+        bufferCondVar.notify_one();
+    }
+}
+
 int main(int argc, char **argv)
 {
-    if (argc != 6 && argc != 7)
+    if (argc != 5)
     {
         std::cerr << std::endl
                   << "Usage: " << argv[0]
                   << " path_to_vocabulary"                   /*1*/
                   << " path_to_ORB_SLAM3_settings"           /*2*/
                   << " path_to_gaussian_mapping_settings"    /*3*/
-                  << " path_to_sequence"                     /*4*/
-                  << " path_to_trajectory_output_directory/" /*5*/
-                  << " (optional)no_viewer"                  /*6*/
+                  << " path_to_trajectory_output_directory/" /*4*/
                   << std::endl;
         return 1;
     }
     bool use_viewer = true;
-    if (argc == 7)
-        use_viewer = (std::string(argv[6]) == "no_viewer" ? false : true);
 
-    std::string output_directory = std::string(argv[5]);
+    std::string output_directory = std::string(argv[4]);
     if (output_directory.back() != '/')
         output_directory += "/";
     std::filesystem::path output_dir(output_directory);
-
-    // Retrieve paths to images
-    std::vector<std::string> vstrImageFilenamesRGB;
-    std::vector<std::string> vstrImageFilenamesD;
-    std::string strImageDir = std::string(argv[4]);
-    std::filesystem::path pathImageDir(strImageDir);
-    pathImageDir /= "results";
-    LoadImages(pathImageDir, vstrImageFilenamesRGB, vstrImageFilenamesD);
-
-    // Check consistency in the number of images
-    int nImages = vstrImageFilenamesRGB.size();
-    if (vstrImageFilenamesRGB.empty())
-    {
-        std::cerr << std::endl << "No images found in provided path." << std::endl;
-        return 1;
-    }
-    else if (vstrImageFilenamesD.size() != vstrImageFilenamesRGB.size())
-    {
-        std::cerr << std::endl << "Different number of images for rgb and depth." << std::endl;
-        return 1;
-    }
 
     // Device
     torch::DeviceType device_type;
@@ -122,36 +122,37 @@ int main(int argc, char **argv)
 
     // Vector for tracking time statistics
     std::vector<float> vTimesTrack;
-    vTimesTrack.resize(nImages);
+    vTimesTrack.reserve(3000000);
 
     std::cout << std::endl << "-------" << std::endl;
     std::cout << "Start processing sequence ..." << std::endl;
-    std::cout << "Images in the sequence: " << nImages << std::endl << std::endl;
+
+    // Set up ZeroMQ context and socket
+    zmq::context_t context(1);
+    zmq::socket_t socket(context, ZMQ_SUB);
+    socket.connect("tcp://localhost:5555");
+    socket.setsockopt(ZMQ_SUBSCRIBE, "", 0);
+
+    // Start socket receiver thread
+    std::thread socket_thread(socketReceiver, std::ref(context), std::ref(socket));
 
     // Main loop
     cv::Mat imRGB, imD;
-    for (int ni = 0; ni < nImages; ni++)
+    int ni = 0;
+    while (true)
     {
         if (pSLAM->isShutDown())
             break;
-        // Read image and depthmap from file
-        imRGB = cv::imread(vstrImageFilenamesRGB[ni], cv::IMREAD_UNCHANGED);
-        cv::cvtColor(imRGB, imRGB, CV_BGR2RGB);
-        imD = cv::imread(vstrImageFilenamesD[ni], cv::IMREAD_UNCHANGED);
-        double tframe = ni;
 
-        if (imRGB.empty())
-        {
-            std::cerr << std::endl << "Failed to load image at: "
-                      << vstrImageFilenamesRGB[ni] << std::endl;
-            return 1;
-        }
-        if (imD.empty())
-        {
-            std::cerr << std::endl << "Failed to load image at: "
-                      << vstrImageFilenamesD[ni] << std::endl;
-            return 1;
-        }
+        std::unique_lock<std::mutex> lock(bufferMutex);
+        bufferCondVar.wait(lock, []{ return !imageBuffer.empty(); });
+
+        auto images = imageBuffer.front();
+        imageBuffer.pop();
+        lock.unlock();
+
+        imRGB = images.first;
+        imD = images.second;
 
         if (imageScale != 1.f)
         {
@@ -161,34 +162,17 @@ int main(int argc, char **argv)
             cv::resize(imD, imD, cv::Size(width, height));
         }
 
-        // std::ofstream depthFile("depth_data_client.csv");
-        // if (!depthFile.is_open()) {
-        //     std::cerr << "Error: Could not open depth_data_client.csv for writing!\n";
-        //     return 1;
-        // }
-
-        // // Write depth data to CSV file
-        // for (int i = 0; i < imD.rows; ++i) {
-        //     for (int j = 0; j < imD.cols; ++j) {
-        //         depthFile << imD.at(i, j);
-        //         if (j < imD.cols - 1) {
-        //             depthFile << ",";
-        //         }
-        //     }
-        //     depthFile << "\n";
-        // }
-        
-        // depthFile.close();
+        double tframe = ni++;
 
         std::chrono::steady_clock::time_point t1 = std::chrono::steady_clock::now();
 
         // Pass the image to the SLAM system
-        pSLAM->TrackRGBD(imRGB, imD, tframe, std::vector<ORB_SLAM3::IMU::Point>(), vstrImageFilenamesRGB[ni]);
+        pSLAM->TrackRGBD(imRGB, imD, tframe, std::vector<ORB_SLAM3::IMU::Point>(), "");
 
         std::chrono::steady_clock::time_point t2 = std::chrono::steady_clock::now();
 
         double ttrack = std::chrono::duration_cast<std::chrono::duration<double>>(t2 - t1).count();
-        vTimesTrack[ni] = ttrack;
+        vTimesTrack.push_back(ttrack);
     }
 
     // Stop all threads
@@ -196,6 +180,7 @@ int main(int argc, char **argv)
     training_thd.join();
     if (use_viewer)
         viewer_thd.join();
+    socket_thread.detach();
 
     // GPU peak usage
     saveGpuPeakMemoryUsage(output_dir / "GpuPeakUsageMB.txt");
@@ -210,22 +195,11 @@ int main(int argc, char **argv)
     pSLAM->SaveKeyFrameTrajectoryEuRoC((output_dir / "KeyFrameTrajectory_EuRoC.txt").string());
     pSLAM->SaveTrajectoryKITTI((output_dir / "CameraTrajectory_KITTI.txt").string());
 
-    return 0;
-}
+    socket.close();
+    context.close();
+    cv::destroyAllWindows();
 
-void LoadImages(const std::filesystem::path &pathImageDir, std::vector<std::string> &vstrImageFilenamesRGB,
-                std::vector<std::string> &vstrImageFilenamesD)
-{
-    for (const auto& imagePath : std::filesystem::directory_iterator(pathImageDir))
-    {
-        std::string name = imagePath.path().filename().string();
-        if (name.rfind("frame", 0) == 0)
-            vstrImageFilenamesRGB.push_back(imagePath.path().string());
-        else if (name.rfind("depth", 0) == 0)
-            vstrImageFilenamesD.push_back(imagePath.path().string());
-        std::sort(vstrImageFilenamesRGB.begin(), vstrImageFilenamesRGB.end());
-        std::sort(vstrImageFilenamesD.begin(), vstrImageFilenamesD.end());
-    }
+    return 0;
 }
 
 void saveTrackingTime(std::vector<float> &vTimesTrack, const std::string &strSavePath)
