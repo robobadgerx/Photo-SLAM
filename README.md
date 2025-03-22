@@ -7,6 +7,7 @@ bash docker.sh
 
 # build & install Photo-SLAM (run in docker)
 cd /Photo-SLAM/
+git switch network
 chmod +x ./build.sh
 ./build.sh
 ```
