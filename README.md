@@ -1,4 +1,34 @@
-# Photo-SLAM
+# Photo-SLAM Usage
+## Installation
+```
+# docker environment installation
+cd docker
+bash docker.sh
+
+# build & install Photo-SLAM (run in docker)
+cd /Photo-SLAM/
+chmod +x ./build.sh
+./build.sh
+```
+
+## Run & Test
+```
+cd /Photo-SLAM/
+
+# Mujoco RGB-D camera
+1) First start the RGB-D streaming server on stretch_ros2 
+2) cd scripts
+3) ./simulation_cam_d435i.sh
+
+# Test if the Mujoco RGB-D streamming works correctly
+./bin/mujoco_client
+
+# Realsense d435i RGB-D cam connect through USB
+1) cd scripts
+2) ./realsense_d455.sh
+```
+
+# Photo-SLAM Original Document
 ### [Homepage](https://huajianup.github.io/research/Photo-SLAM/) | [Paper](https://arxiv.org/abs/2311.16728)
 
 **Photo-SLAM: Real-time Simultaneous Localization and Photorealistic Mapping for Monocular, Stereo, and RGB-D Cameras** <br>
