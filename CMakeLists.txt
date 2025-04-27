@@ -43,6 +43,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/bin)
 
 include_directories(
     ${PROJECT_SOURCE_DIR}
+    ${PROJECT_SOURCE_DIR}/openxr
     ${ORB_SLAM3_SOURCE_DIR}
     ${ORB_SLAM3_SOURCE_DIR}/include
     ${ORB_SLAM3_SOURCE_DIR}/include/CameraModels
@@ -50,6 +51,37 @@ include_directories(
     ${EIGEN3_INCLUDE_DIR}
     ${OPENGL_INCLUDE_DIR}
     ${ZeroMQ_INCLUDE_DIRS})
+
+
+if (POLICY CMP0072)
+    cmake_policy (SET CMP0072 NEW)
+endif(POLICY CMP0072)
+
+find_package(OpenGL REQUIRED)
+
+include(FindPkgConfig)
+pkg_search_module(SDL2 REQUIRED sdl2)
+# First try openxr.pc from OpenXR SDK
+pkg_search_module(OPENXR openxr)
+
+find_package(X11 REQUIRED)
+SET(LINUX_LIBS "Xrandr ${X11_LIBRARIES}" m)
+
+find_package(soil2 REQUIRED)
+
+if (OPENXR_FOUND)
+  message("OpenXR found with pkg-config")
+# Second, try OpenXRConfig.cmake from OpenXR SDK
+else()
+  message("OpenXR not found with pkg-config, trying cmake script")
+  # current issue in upstream OpenXR cmake files requires us to find Threads on our own
+  find_package(Threads REQUIRED)
+  find_package(OpenXR REQUIRED)
+
+  if (NOT OpenXR_FOUND)
+    message(FATAL_ERROR "OpenXR not found!")
+  endif()
+endif()
 
 ##################################################################################
 ##  Build the gaussian splatting component libraries to ${PROJECT_SOURCE_DIR}/lib
@@ -261,3 +293,19 @@ if(realsense2_FOUND)
         ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so
         ${realsense2_LIBRARY})
 endif()
+
+
+####################
+## OpenXR Related ##
+####################
+
+add_executable(openxr-example openxr/openxrapp.cpp)
+
+target_link_libraries(openxr-example PRIVATE ${OPENXR_LIBRARIES})
+target_include_directories(openxr-example PRIVATE ${OpenXR_INCLUDE_DIR})
+#target_link_libraries(openxr-example PRIVATE OpenXR::openxr_loader)
+
+target_link_libraries(openxr-example PRIVATE soil2 ${LINUX_LIBS} ${OPENGL_LIBRARIES} ${SDL2_LIBRARIES})
+target_include_directories(openxr-example PRIVATE soil2 ${SDL2_INCLUDE_DIRS} ${SDL2_INCLUDE_DIR} ${EXTRA_INCLUDES})
+
+target_compile_options(openxr-example PRIVATE -pedantic -Wall -Wextra -Wno-unused-parameter)
