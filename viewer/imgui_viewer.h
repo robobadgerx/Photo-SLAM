@@ -43,6 +43,8 @@
 
 #include <mutex>
 
+#include <opencv2/opencv.hpp>
+
 namespace ORB_SLAM3
 {
 

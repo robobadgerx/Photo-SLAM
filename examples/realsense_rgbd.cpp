@@ -40,6 +40,9 @@
 #include "include/gaussian_mapper.h"
 #include "viewer/imgui_viewer.h"
 
+#include "openxrapp.h"
+#include "openxrapp.cpp"
+
 rs2_stream find_stream_to_align(const std::vector<rs2::stream_profile>& streams)
 {
     //Given a vector of streams, we try to find a depth stream and another stream to align depth with.
@@ -325,14 +328,24 @@ std::cout<<111<<std::endl;
             pSLAM, gaussian_cfg_path, output_dir, 0, device_type);
     std::thread training_thd(&GaussianMapper::run, pGausMapper.get());
 
-    // Create Gaussian Viewer
+    // // Create Gaussian Viewer
+    // std::thread viewer_thd;
+    // std::shared_ptr<ImGuiViewer> pViewer;
+    // if (use_viewer)
+    // {
+    //     pViewer = std::make_shared<ImGuiViewer>(pSLAM, pGausMapper);
+    //     viewer_thd = std::thread(&ImGuiViewer::run, pViewer.get());
+    // }
+
+    // // Create Gaussian Viewer
     std::thread viewer_thd;
-    std::shared_ptr<ImGuiViewer> pViewer;
+    std::shared_ptr<OpenXRApp> pOpenXRApp;
     if (use_viewer)
     {
-        pViewer = std::make_shared<ImGuiViewer>(pSLAM, pGausMapper);
-        viewer_thd = std::thread(&ImGuiViewer::run, pViewer.get());
+        pOpenXRApp = std::make_shared<OpenXRApp>(pSLAM, pGausMapper);
+        viewer_thd = std::thread(&OpenXRApp::InitializeAndRun, pOpenXRApp.get());
     }
+
 
     // Vector for tracking time statistics
     std::vector<float> vTimesTrack;
@@ -394,9 +407,17 @@ std::cout<<111<<std::endl;
     // Stop all threads
     pSLAM->Shutdown();
     training_thd.join();
-    if (use_viewer)
-        viewer_thd.join();
 
+    if (use_viewer){
+        pOpenXRApp->Shutdown();
+        viewer_thd.join();
+    }
+
+    // if (use_viewer){
+    //     viewer_thd.join();
+    // }
+
+        
     // GPU peak usage
     saveGpuPeakMemoryUsage(output_dir / "GpuPeakUsageMB.txt");
 

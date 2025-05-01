@@ -18,6 +18,8 @@
 
 #include "imgui_viewer.h"
 
+#define __DEBUG
+
 static void glfw_error_callback(int error, const char* description)
 {
     fprintf(stderr, "[ImGuiViewer]GLFW Error %d: %s\n", error, description);
@@ -252,6 +254,15 @@ void ImGuiViewer::run()
             else
             {
                 pMapDrawer_->SetCurrentCameraTwc(pSlamMapDrawer_->GetCurrentCameraPose());
+
+                #ifdef __DEBUG
+                Sophus::SE3f currentPose = pSlamMapDrawer_->GetCurrentCameraPose();
+                std::cout << "----------------" << std::endl;
+                std::cout << "Current Camera Pose (from MapDrawer):" << std::endl;
+                std::cout << currentPose.inverse().matrix() << std::endl;
+                std::cout << "-------------------" << std::endl;
+                #endif
+
             }
             pMapDrawer_->GetOpenGLCameraMatrix(true, Tcw, glmTwc, Ow);
             if (!init_Twc_set_)
@@ -323,6 +334,9 @@ void ImGuiViewer::run()
             cv::Rect SLAM_image_rect(0, 0, SLAM_img_with_text.cols, SLAM_img_with_text.rows);
             SLAM_img_with_text.copyTo(SLAM_img_to_show(SLAM_image_rect));
             // Upload SLAM frame
+            
+            //cv::imshow("SLAM Frame", SLAM_img_to_show);
+
             glBindTexture(GL_TEXTURE_2D, SLAM_img_texture);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, SLAM_img_to_show.cols, SLAM_img_to_show.rows,
                         0, GL_BGR, GL_UNSIGNED_BYTE, (unsigned char*)SLAM_img_to_show.data);
@@ -343,6 +357,18 @@ void ImGuiViewer::run()
             cv::Mat rendered_img_to_show = cv::Mat(rendered_image_height_, padded_sub_image_width_, CV_32FC3, cv::Vec3f(0.0f, 0.0f, 0.0f));
             rendered_img.copyTo(rendered_img_to_show(image_rect_sub));
             // Upload rendered frame
+            
+            #ifdef  __DEBUG
+            std::cout << "----------------" << std::endl;
+                std::cout << "Current Tcw (to renderFromPose):" << std::endl;
+                std::cout << Tcw.matrix() << std::endl;
+                std::cout << "----------------------" << std::endl;
+            #endif
+
+            cv::imshow("Rendered Frame", rendered_img);
+            if (cv::waitKey(1) == 27)
+                break; 
+
             glBindTexture(GL_TEXTURE_2D, rendered_img_texture);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, rendered_img_to_show.cols, rendered_img_to_show.rows,
                         0, GL_RGB, GL_FLOAT, (float*)rendered_img_to_show.data);
@@ -373,6 +399,8 @@ void ImGuiViewer::run()
                 cv::Mat main_img = pGausMapper_->renderFromPose(
                     Tcw_main_, rendered_image_width_main_, rendered_image_height_main_, true);
                 cv::Mat main_img_to_show = cv::Mat(rendered_image_height_main_, padded_main_image_width_, CV_32FC3, cv::Vec3f(0.0f, 0.0f, 0.0f));
+                
+
                 main_img.copyTo(main_img_to_show(image_rect_main));
                 glBindTexture(GL_TEXTURE_2D, main_img_texture);
                 glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, main_img_to_show.cols, main_img_to_show.rows,

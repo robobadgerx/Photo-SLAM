@@ -1,3 +1,8 @@
+#ifndef OPENXR_APP_H
+#define OPENXR_APP_H
+
+#pragma once
+
 #include <vector>       // For std::vector
 #include <string>       // For std::string
 #include <iostream>     // For std::cout, std::cerr, std::endl
@@ -75,6 +80,7 @@ extern "C" {
     _(PFNGLUNIFORM4FPROC, glUniform4f)                                                               \
     _(PFNGLGENERATEMIPMAPPROC, glGenerateMipmap)                                                     \
     _(PFNGLUNIFORM1IPROC, glUniform1i)                                                               \
+    _(PFNGLBLITFRAMEBUFFERPROC,     glBlitFramebuffer)                             \
 
 // generates a global declaration for each gl func listed in FOR_EACH_GL_FUNC
 FOR_EACH_GL_FUNC(GL_DECL)
@@ -480,6 +486,41 @@ static bool load_extension_function_pointers(XrInstance instance) {
         return false;
 
     return true;
+}
+
+
+// --- Helper Function (You MUST implement this correctly!) ---
+Sophus::SE3f ConvertXrPoseToSophusSE3f(const XrPosef& xrPose) {
+    // xrPose is likely World-to-View (Twv) in OpenXR coords (Y-up, RH, -Z fwd)
+    // GaussianMapper::renderFromPose expects Camera-to-World (Tcw) in its coordinate system
+    // (potentially Y-down, RH, +Z fwd like OpenCV)
+
+    // 1. Convert XrPosef to Eigen/GLM matrix (Twv)
+    Eigen::Quaternionf orientation(xrPose.orientation.w, xrPose.orientation.x, xrPose.orientation.y, xrPose.orientation.z);
+    Eigen::Vector3f position(xrPose.position.x, xrPose.position.y, xrPose.position.z);
+    Eigen::Matrix4f Twv_xr = Eigen::Matrix4f::Identity();
+    Twv_xr.block<3, 3>(0, 0) = orientation.toRotationMatrix();
+    Twv_xr.block<3, 1>(0, 3) = position;
+
+    // 2. Invert to get View-to-World (Tvw_xr)
+    Eigen::Matrix4f Tvw_xr = Twv_xr.inverse();
+
+    // 3. Apply coordinate system transformation matrix (if needed)
+    // Example: Transform from OpenXR (Y-up, -Z fwd) to OpenCV (Y-down, +Z fwd)
+    Eigen::Matrix4f xr_to_cv_coord = Eigen::Matrix4f::Identity();
+    xr_to_cv_coord(1, 1) = -1.0f; // Flip Y
+    xr_to_cv_coord(2, 2) = -1.0f; // Flip Z
+
+    // Tcw_cv = xr_to_cv_coord * Tvw_xr * xr_to_cv_coord.inverse();
+    // Simplified if rotation applied first: Tcw_cv = xr_to_cv_coord * Tvw_xr
+    Eigen::Matrix4f Tcw_cv_coords = xr_to_cv_coord * Tvw_xr;
+
+
+    // 4. Convert Eigen::Matrix4f to Sophus::SE3f
+    Eigen::Matrix3f R = Tcw_cv_coords.block<3, 3>(0, 0);
+    Eigen::Vector3f t = Tcw_cv_coords.block<3, 1>(0, 3);
+
+    return Sophus::SE3f(R, t);
 }
 
 // =============================================================================
@@ -937,3 +978,117 @@ void render_frame(int w,
      // as OpenXR needs it attached when the frame is submitted.
      // glBindFramebuffer(GL_FRAMEBUFFER, 0); // Already unbound before blit
 }
+
+// ==================================
+// Modified OpenXRApp Class Definition
+// ==================================
+// class OpenXRApp {
+//     public:
+//         // +++ 中文注释：构造函数，接收 SLAM/Mapper 指针 +++
+//         // +++ English Comment: Constructor taking SLAM/Mapper pointers +++
+//         OpenXRApp(std::shared_ptr<ORB_SLAM3::System> pSLAM,
+//                   std::shared_ptr<GaussianMapper> pGausMapper);
+    
+//         // +++ 中文注释：析构函数 +++
+//         // +++ English Comment: Destructor +++
+//         ~OpenXRApp();
+    
+//         // Prevent copying
+//         OpenXRApp(const OpenXRApp&) = delete;
+//         OpenXRApp& operator=(const OpenXRApp&) = delete;
+    
+//         // +++ 中文注释：初始化 OpenXR 和相关资源 +++
+//         // +++ English Comment: Initializes OpenXR and related resources +++
+//         bool Initialize();
+    
+//         // +++ 中文注释：运行主事件和渲染循环 +++
+//         // +++ English Comment: Runs the main event and rendering loop +++
+//         void Run();
+    
+//         // +++ 中文注释：清理所有资源 +++
+//         // +++ English Comment: Cleans up all resources +++
+//         void Shutdown();
+    
+    
+//     private:
+//         // --- Initialization Methods ---
+//         bool CheckInstanceExtensions();
+//         bool CreateInstance();
+//         bool LoadExtensionFunctions(); // Assumes global function pointers or member storage
+//         bool GetSystem();
+//         bool GetViewConfigurations();
+//         bool CheckGraphicsRequirements();
+//         bool InitializePlatformGraphics(); // Sets up SDL/GLX, fills m_graphics_binding_gl
+//         bool CreateSession();
+//         bool CreateReferenceSpace();
+//         bool CreateSwapchains();
+    
+//         // --- Main Loop Methods ---
+//         void PollEvents();
+//         void PollSdlEvents(); // Helper for SDL specific events
+//         void ProcessEvent(const XrEventDataBuffer& event);
+//         void HandleSessionStateChanged(const XrEventDataSessionStateChanged* event);
+//         void HandleInteractionProfileChanged(); // Placeholder
+    
+//         // --- Frame Rendering Methods ---
+//         bool RenderFrameCycle();
+//         bool RenderViewToSwapchain(uint32_t view_index, const XrFrameState& frame_state, XrSwapchainSubImage& sub_image /* out */);
+    
+//         // --- Cleanup Methods ---
+//         void CleanupPlatformGraphics(); // Cleans up SDL/GLX, blit FBO
+//         void CleanupSwapchains();
+    
+    
+//         // --- Member Variables ---
+    
+//         // +++ 中文注释：指向 SLAM 和 Mapper 对象的成员变量 +++
+//         // +++ English Comment: Member variables pointing to SLAM and Mapper objects +++
+//         std::shared_ptr<ORB_SLAM3::System> pSLAM_;
+//         std::shared_ptr<GaussianMapper> pGausMapper_;
+    
+//         // --- OpenXR Configuration ---
+//         XrFormFactor m_form_factor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
+//         XrViewConfigurationType m_view_type = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+//         XrReferenceSpaceType m_play_space_type = XR_REFERENCE_SPACE_TYPE_LOCAL; // Or STAGE
+//         float m_near_z = 0.1f; // Near clipping plane
+//         float m_far_z = 100.0f; // Far clipping plane
+    
+//         // --- OpenXR Handles ---
+//         XrInstance m_instance = XR_NULL_HANDLE;
+//         XrSystemId m_system_id = XR_NULL_SYSTEM_ID;
+//         XrSession m_session = XR_NULL_HANDLE;
+//         XrSpace m_play_space = XR_NULL_HANDLE;
+    
+//         // --- Graphics Binding (Filled by InitializePlatformGraphics) ---
+//         // Assumes Xlib/GLX platform
+//         XrGraphicsBindingOpenGLXlibKHR m_graphics_binding_gl = {XR_TYPE_GRAPHICS_BINDING_OPENGL_XLIB_KHR};
+    
+//         // --- View & Swapchain Data ---
+//         uint32_t m_view_count = 0;
+//         std::vector<XrViewConfigurationView> m_viewconfig_views;
+//         std::vector<XrCompositionLayerProjectionView> m_projection_views; // For submission
+//         std::vector<XrView> m_views; // Holds located view pose/fov per frame
+//         std::vector<XrSwapchain> m_swapchains;
+//         std::vector<uint32_t> m_swapchain_lengths;
+//         std::vector<std::vector<XrSwapchainImageOpenGLKHR>> m_swapchain_images; // Holds GL texture IDs
+    
+//         // +++ 中文注释：用于伴侣窗口图像拷贝 (blit) 的 FBO +++
+//         // +++ English Comment: Framebuffer Object for blitting to companion window +++
+//         GLuint m_blit_fbo = 0;
+    
+//         // --- Main Loop State ---
+//         bool m_quit_mainloop = false;
+//         bool m_session_running = false;
+//         bool m_run_framecycle = false;
+//         XrSessionState m_state = XR_SESSION_STATE_UNKNOWN;
+    
+//         // --- Platform Specifics (Example: SDL Window) ---
+//         // These should be managed by your platform graphics helper functions
+//         SDL_Window* desktop_window = nullptr;
+//         // Display*, GLXContext etc. are now within m_graphics_binding_gl
+    
+//     }; // End OpenXRApp Class
+
+
+
+#endif // OPENXR_APP_H

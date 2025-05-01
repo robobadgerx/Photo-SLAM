@@ -288,6 +288,7 @@ if(realsense2_FOUND)
     target_include_directories(realsense_rgbd PUBLIC
         ${realsense_INCLUDE_DIR})
     target_link_libraries(realsense_rgbd
+        openxr-example
         gaussian_viewer    
         gaussian_mapper
         ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so
@@ -299,13 +300,22 @@ endif()
 ## OpenXR Related ##
 ####################
 
-add_executable(openxr-example openxr/openxrapp.cpp)
+add_library(openxr-example openxr/openxrapp.cpp)
 
 target_link_libraries(openxr-example PRIVATE ${OPENXR_LIBRARIES})
 target_include_directories(openxr-example PRIVATE ${OpenXR_INCLUDE_DIR})
 #target_link_libraries(openxr-example PRIVATE OpenXR::openxr_loader)
 
-target_link_libraries(openxr-example PRIVATE soil2 ${LINUX_LIBS} ${OPENGL_LIBRARIES} ${SDL2_LIBRARIES})
-target_include_directories(openxr-example PRIVATE soil2 ${SDL2_INCLUDE_DIRS} ${SDL2_INCLUDE_DIR} ${EXTRA_INCLUDES})
+target_link_libraries(openxr-example PUBLIC
+    ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so
+    gaussian_mapper
+    ${OpenCV_LIBRARIES}
+    jsoncpp_lib
+    "${TORCH_LIBRARIES}"
+    glm::glm
+    OpenGL::GL)
 
-target_compile_options(openxr-example PRIVATE -pedantic -Wall -Wextra -Wno-unused-parameter)
+target_link_libraries(openxr-example PUBLIC soil2 ${LINUX_LIBS} ${OPENGL_LIBRARIES} ${SDL2_LIBRARIES})
+target_include_directories(openxr-example PUBLIC soil2 ${SDL2_INCLUDE_DIRS} ${SDL2_INCLUDE_DIR} ${EXTRA_INCLUDES})
+
+# target_compile_options(openxr-example PRIVATE -pedantic -Wall -Wextra -Wno-unused-parameter)
