@@ -49,6 +49,12 @@
 #include "gaussian_scene.h"
 #include "gaussian_trainer.h"
 
+
+extern "C" {
+    #include "openxr_headers/openxr.h"
+}
+
+
 #define CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(dir)                                       \
     if (!dir.empty() && !std::filesystem::exists(dir))                                      \
         if (!std::filesystem::create_directories(dir))                                      \
@@ -111,7 +117,7 @@ public:
     void run();
     void trainColmap();
     void trainForOneIteration();
-
+    void addOpenXRCamera(uint32_t width, uint32_t height, float nearZ, float farZ, const XrFovf& fov, int camera_id = 996); // Pass near/far too
     bool isStopped();
     void signalStop(const bool going_to_stop = true);
 
@@ -120,6 +126,13 @@ public:
         const int width,
         const int height,
         const bool main_vision = false);
+
+    cv::Mat renderFromPoseXR(
+        const Sophus::SE3f &Tcw,
+        const int width,
+        const int height,
+        const bool main_vision = false);
+
 
     int getIteration();
     void increaseIteration(const int inc = 1);
@@ -237,6 +250,7 @@ public:
 
     bool viewer_camera_id_set_ = false;
     std::uint32_t viewer_camera_id_ = 0;
+    std::uint32_t viewer_camera_id_xr_ = 0;
     float rendered_image_viewer_scale_ = 1.0f;
     float rendered_image_viewer_scale_main_ = 1.0f;
 

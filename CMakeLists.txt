@@ -44,6 +44,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/bin)
 include_directories(
     ${PROJECT_SOURCE_DIR}
     ${PROJECT_SOURCE_DIR}/openxr
+    ${PROJECT_SOURCE_DIR}/openxr/openxr_headers
     ${ORB_SLAM3_SOURCE_DIR}
     ${ORB_SLAM3_SOURCE_DIR}/include
     ${ORB_SLAM3_SOURCE_DIR}/include/CameraModels
@@ -187,6 +188,9 @@ target_link_libraries(gaussian_mapper
     simple_knn
     cuda_rasterizer)
 
+target_include_directories(gaussian_mapper PRIVATE ${OpenXR_INCLUDE_DIR})
+target_link_libraries(gaussian_mapper ${OPENXR_LIBRARIES})
+
 ##################################################################################
 ##  Build the viewer library to ${PROJECT_SOURCE_DIR}/lib
 ##################################################################################
@@ -304,7 +308,7 @@ add_library(openxr-example openxr/openxrapp.cpp)
 
 target_link_libraries(openxr-example PRIVATE ${OPENXR_LIBRARIES})
 target_include_directories(openxr-example PRIVATE ${OpenXR_INCLUDE_DIR})
-#target_link_libraries(openxr-example PRIVATE OpenXR::openxr_loader)
+# target_link_libraries(openxr-example PRIVATE OpenXR::openxr_loader)
 
 target_link_libraries(openxr-example PUBLIC
     ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so

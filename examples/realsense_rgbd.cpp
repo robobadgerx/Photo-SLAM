@@ -43,6 +43,22 @@
 #include "openxrapp.h"
 #include "openxrapp.cpp"
 
+#include <csignal>
+#include <atomic>
+
+
+// Global flag to indicate program termination
+std::atomic<bool> terminate_program(false);
+
+// Signal handler for SIGINT
+void signal_handler(int signal) {
+    if (signal == SIGINT) {
+        terminate_program = true;
+        std::cout << "SIGINT received. Terminating program..." << std::endl;
+    }
+}
+
+
 rs2_stream find_stream_to_align(const std::vector<rs2::stream_profile>& streams)
 {
     //Given a vector of streams, we try to find a depth stream and another stream to align depth with.
@@ -140,6 +156,9 @@ void saveGpuPeakMemoryUsage(std::filesystem::path pathSave);
 
 int main(int argc, char** argv)
 {
+    // Register signal handler
+    std::signal(SIGINT, signal_handler);
+
     if (argc != 5)
     {
         std::cerr << std::endl
@@ -356,7 +375,7 @@ std::cout<<111<<std::endl;
 
     rs2::frameset fs;
 
-   while (!pSLAM->isShutDown())
+   while (!pSLAM->isShutDown() && !terminate_program)
     {
         {
             std::unique_lock<std::mutex> lk(imu_mutex);
@@ -404,15 +423,49 @@ std::cout<<111<<std::endl;
         vTimesTrack.emplace_back(ttrack);
     }
 
+    // // Stop all threads
+    // pSLAM->Shutdown();
+    // training_thd.join();
+    // printf("------pSLAM Shut down--------\n");
+
+    // if (use_viewer){
+    //     pOpenXRApp->Shutdown();
+    //     viewer_thd.join();
+    // }
+    // printf("------pOpenXRApp Shut down--------\n");
     // Stop all threads
+    
+    std::cout << "Shutting down pSLAM..." << std::endl;
     pSLAM->Shutdown();
-    training_thd.join();
-
-    if (use_viewer){
-        pOpenXRApp->Shutdown();
-        viewer_thd.join();
+    if (training_thd.joinable()) {
+        auto start_time = std::chrono::steady_clock::now();
+        while (training_thd.joinable()) {
+            auto elapsed = std::chrono::steady_clock::now() - start_time;
+            if (std::chrono::duration_cast<std::chrono::seconds>(elapsed).count() > 5) {
+                std::cerr << "Training thread did not terminate in time. Force stopping..." << std::endl;
+                training_thd.detach();
+                break;
+            }
+        }
     }
+    std::cout << "------pSLAM Shut down--------" << std::endl;
 
+    if (use_viewer) {
+        std::cout << "Shutting down pOpenXRApp..." << std::endl;
+        pOpenXRApp->Shutdown();
+        if (viewer_thd.joinable()) {
+            auto start_time = std::chrono::steady_clock::now();
+            while (viewer_thd.joinable()) {
+                auto elapsed = std::chrono::steady_clock::now() - start_time;
+                if (std::chrono::duration_cast<std::chrono::seconds>(elapsed).count() > 5) {
+                    std::cerr << "Viewer thread did not terminate in time. Force stopping..." << std::endl;
+                    viewer_thd.detach();
+                    break;
+                }
+            }
+        }
+        std::cout << "------pOpenXRApp Shut down--------" << std::endl;
+    }
     // if (use_viewer){
     //     viewer_thd.join();
     // }
@@ -430,6 +483,8 @@ std::cout<<111<<std::endl;
     pSLAM->SaveTrajectoryEuRoC((output_dir / "CameraTrajectory_EuRoC.txt").string());
     pSLAM->SaveKeyFrameTrajectoryEuRoC((output_dir / "KeyFrameTrajectory_EuRoC.txt").string());
     pSLAM->SaveTrajectoryKITTI((output_dir / "CameraTrajectory_KITTI.txt").string());
+
+    printf("-------Shut down Over----\n");
 
     return 0;
 }

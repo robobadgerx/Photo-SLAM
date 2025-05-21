@@ -14,6 +14,21 @@
 
 #include "openxrapp.h"
 
+#include <iomanip> // For formatting output
+
+void PrintPose(const XrPosef& pose, uint32_t view_index) {
+    std::cout << "Pose for view index " << view_index << ":\n";
+    std::cout << "  Position: "
+              << "x = " << pose.position.x << ", "
+              << "y = " << pose.position.y << ", "
+              << "z = " << pose.position.z << "\n";
+    std::cout << "  Orientation: "
+              << "x = " << pose.orientation.x << ", "
+              << "y = " << pose.orientation.y << ", "
+              << "z = " << pose.orientation.z << ", "
+              << "w = " << pose.orientation.w << "\n";
+}
+
 class OpenXRApp {
     public:
     OpenXRApp(std::shared_ptr<ORB_SLAM3::System> pSLAM,
@@ -34,6 +49,8 @@ class OpenXRApp {
             printf("Initializing OpenXR Application...\n");
 
             pSlamMapDrawer_ = pSLAM_->getMapDrawer();
+
+            // Initialize OpenXR
             print_api_layers(); // Informational
     
             if (!CheckInstanceExtensions()) return false;
@@ -49,6 +66,36 @@ class OpenXRApp {
             if (!CreateReferenceSpace()) return false;
             if (!CreateSwapchains()) return false;
             if (!InitializeRenderResources()) return false; // Needs swapchain info
+
+
+            // --- Locate Views to Populate m_views ---
+            XrViewState view_state = {XR_TYPE_VIEW_STATE};
+            XrViewLocateInfo view_locate_info = {XR_TYPE_VIEW_LOCATE_INFO};
+            view_locate_info.viewConfigurationType = m_view_type;
+            view_locate_info.displayTime = 0; // Use 0 for initialization
+            view_locate_info.space = m_play_space;
+
+            uint32_t view_count_output = 0;
+            XrResult result = xrLocateViews(m_session, &view_locate_info, &view_state,
+                                            (uint32_t)m_views.size(), &view_count_output, m_views.data());
+            if (!xr_check(m_instance, result, "xrLocateViews() failed during initialization!")) {
+                return false;
+            }
+
+            if (view_count_output == 0 || !(view_state.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT) ||
+                !(view_state.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT)) {
+                printf("Error: Views are not valid during initialization.\n");
+                return false;
+            }
+
+            pGausMapper_->addOpenXRCamera(
+                m_viewconfig_views[0].recommendedImageRectWidth,
+                m_viewconfig_views[0].recommendedImageRectHeight,
+                m_near_z,
+                m_far_z,
+                m_views[0].fov, // Assuming first view is the main one
+                996); // Camera ID can be passed as needed
+            // Initialize SLAM system with OpenXR camera
     
             printf("Initialization Complete.\n");
             return true;
@@ -109,7 +156,7 @@ class OpenXRApp {
 
         void Shutdown() {
             printf("Shutting Down...\n");
-    
+            m_quit_mainloop = true;
             // Cleanup GL resources first while context might still be valid
             CleanupRenderResources();
             CleanupPlatformGraphics(); // Destroy window/context
@@ -153,7 +200,7 @@ class OpenXRApp {
         // --- Configuration ---
         XrFormFactor m_form_factor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
         XrViewConfigurationType m_view_type = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
-        XrReferenceSpaceType m_play_space_type = XR_REFERENCE_SPACE_TYPE_LOCAL;
+        XrReferenceSpaceType m_play_space_type = XR_REFERENCE_SPACE_TYPE_VIEW;
         float m_near_z = 0.01f;
         float m_far_z = 100.0f;
     
@@ -758,23 +805,49 @@ class OpenXRApp {
             if (!xr_check(m_instance, result, "Failed to wait for swapchain image for view %d", view_index)) return false;
 
             // --- Prepare Rendering ---
-            //int width = m_viewconfig_views[view_index].recommendedImageRectWidth;
-            //int height = m_viewconfig_views[view_index].recommendedImageRectHeight;
-            int width = 1280;
-            int height = 720;
+            int width = m_viewconfig_views[view_index].recommendedImageRectWidth;
+            int height = m_viewconfig_views[view_index].recommendedImageRectHeight;
+            // int width = 1280;
+            // int height = 720;
             GLuint swapchain_texture_id = m_swapchain_images[view_index][acquired_index].image;
 
             // Convert OpenXR view pose to the Tcw format needed by GaussianMapper
             // THIS IS THE CRITICAL CONVERSION STEP - Ensure it's correct!
-            // Sophus::SE3f Tcw = ConvertXrPoseToSophusSE3f(m_views[view_index].pose);
+            
+            // PrintPose(m_views[view_index].pose, view_index);
+            
             
             Sophus::SE3f Tcw = pSlamMapDrawer_->GetCurrentCameraPose().inverse();
 
+            Sophus::SE3f Thc = ConvertXrPoseToSophusSE3f(m_views[view_index].pose);
+
+            Sophus::SE3f T_render = Thc * Tcw;
+
+            // std::cout << "T_cw:\n" << Tcw.matrix() << std::endl;
+            // std::cout << "T_hc:\n" << Thc.matrix() << std::endl;
+            // std::cout << "T_render (T_world):\n" << T_render.matrix() << std::endl;
+            cv::Mat rendered_mat_org = pGausMapper_->renderFromPose(T_render, 1280, 720, true);
+            
+            cv::imshow("Rendered Frame Org", rendered_mat_org);
+            if (cv::waitKey(1) == 27)
+                return false; // Exit on ESC key
+
+
+
             // --- Call GaussianMapper Rendering ---
             // The 'true'/'false' parameter might control quality or specific render passes
-            cv::Mat rendered_mat = pGausMapper_->renderFromPose(Tcw, width, height, true);
+            cv::Mat rendered_mat = pGausMapper_->renderFromPoseXR(T_render, width, height, true);
 
-            cv::imshow("Rendered Frame", rendered_mat);
+            cv::pow(rendered_mat, 1.0/2.2, rendered_mat);
+            
+            //cout <<"-----rendered_mat get-----" << endl;
+            // Check if the rendered_mat is empty or has unexpected dimensions
+
+            cv::flip(rendered_mat, rendered_mat, 0);
+
+            cv::Mat image_cv;
+            cv::cvtColor(rendered_mat, image_cv, CV_RGB2BGR);
+            cv::imshow("Rendered Frame", image_cv);
             if (cv::waitKey(1) == 27)
                 return false; // Exit on ESC key
 
@@ -843,7 +916,7 @@ class OpenXRApp {
 
             // Define source/dest rects for blit
             GLint srcX0 = 0, srcY0 = 0, srcX1 = width, srcY1 = height;
-            GLint companion_win_w = 1280, companion_win_h = 720;// Get actual window size if needed
+            GLint companion_win_w = width, companion_win_h = height / 2;// Get actual window size if needed
             //SDL_GetWindowSize(desktop_window, &companion_win_w, &companion_win_h);
             // Simple side-by-side layout for mirror
             GLint dstX0 = (view_index == 0) ? 0 : companion_win_w / 2;

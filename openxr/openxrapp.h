@@ -31,11 +31,14 @@
 
 #define XR_USE_PLATFORM_XLIB
 #define XR_USE_GRAPHICS_API_OPENGL
+
 // Assuming openxr_headers are C headers
 extern "C" {
     #include "openxr_headers/openxr.h"
     #include "openxr_headers/openxr_platform.h"
 }
+
+// #include "openxr_c_wrapper.h"
 
 // SDL is a C library
 extern "C" {
@@ -513,7 +516,8 @@ Sophus::SE3f ConvertXrPoseToSophusSE3f(const XrPosef& xrPose) {
 
     // Tcw_cv = xr_to_cv_coord * Tvw_xr * xr_to_cv_coord.inverse();
     // Simplified if rotation applied first: Tcw_cv = xr_to_cv_coord * Tvw_xr
-    Eigen::Matrix4f Tcw_cv_coords = xr_to_cv_coord * Tvw_xr;
+    // Eigen::Matrix4f Tcw_cv_coords = xr_to_cv_coord * Tvw_xr;
+    Eigen::Matrix4f Tcw_cv_coords = Tvw_xr; 
 
 
     // 4. Convert Eigen::Matrix4f to Sophus::SE3f

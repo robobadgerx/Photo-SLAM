@@ -18,6 +18,19 @@
 
 #include "include/gaussian_mapper.h"
 
+#include <fstream>
+#include <iomanip>
+
+void logToFile(const std::string& message, const std::string& log_file = "debug_log.txt") {
+    std::ofstream log_stream(log_file, std::ios::app);
+    if (log_stream.is_open()) {
+        log_stream << message << std::endl;
+        log_stream.close();
+    } else {
+        std::cerr << "Failed to open log file: " << log_file << std::endl;
+    }
+}
+
 GaussianMapper::GaussianMapper(
     std::shared_ptr<ORB_SLAM3::System> pSLAM,
     std::filesystem::path gaussian_config_file_path,
@@ -540,6 +553,117 @@ void GaussianMapper::run()
 
     signalStop();
 }
+
+// Add this function implementation to GaussianMapper.cpp
+void GaussianMapper::addOpenXRCamera(uint32_t width, uint32_t height, float nearZ, float farZ, const XrFovf& fov, int camera_id /*= 996*/)
+{
+    std::cout << "[Gaussian Mapper] Adding OpenXR Virtual Camera (ID: " << camera_id << ")" << std::endl;
+    std::cout << "  Resolution: " << width << " x " << height << std::endl;
+    std::cout << "  FoV (L,R,U,D): "
+              << fov.angleLeft << ", " << fov.angleRight << ", "
+              << fov.angleUp << ", " << fov.angleDown << std::endl;
+
+    // Check if camera already exists
+    if (scene_->cameras_.count(camera_id)) {
+        std::cout << "  OpenXR Camera (ID: " << camera_id << ") already exists." << std::endl;
+        // Optionally update parameters if they can change
+        scene_->cameras_.at(camera_id).width_ = width;
+        scene_->cameras_.at(camera_id).height_ = height;
+        // Update FoV/projection if Camera struct supports it
+        return;
+    }
+
+    Camera openXR_camera;
+    openXR_camera.camera_id_ = camera_id;
+    openXR_camera.setModelId(Camera::CameraModelType::PINHOLE); // Use Pinhole conceptually
+
+    // --- Set Resolution ---
+    openXR_camera.width_ = width;
+    openXR_camera.height_ = height;
+
+    // --- Projection Parameters (Using Approximate Intrinsics - Option B) ---
+    // !!! This is an approximation. Storing FoV or Projection Matrix is better !!!
+    // Calculate equivalent focal lengths (average horizontal/vertical FoV)
+    float fovX = std::abs(fov.angleRight) + std::abs(fov.angleLeft); // Total horizontal FoV
+    float fovY = std::abs(fov.angleUp) + std::abs(fov.angleDown);     // Total vertical FoV
+    float fx = graphics_utils::fov2focal(fovX, width);
+    float fy = graphics_utils::fov2focal(fovY, height);
+    // Calculate principal point (assuming symmetrical FoV for simplicity, might be wrong)
+    // A more correct calculation uses tan(angle) and width/height
+    float cx = width / 2.0f; // Approximation
+    float cy = height / 2.0f; // Approximation
+    // More correct cx/cy calculation (careful with signs):
+    // cx = width * (tan(fov.angleLeft) / (tan(fov.angleLeft) + tan(fov.angleRight)));
+    // cy = height * (tan(fov.angleUp) / (tan(fov.angleUp) + tan(fov.angleDown)));
+
+    openXR_camera.params_[0] = fx;
+    openXR_camera.params_[1] = fy;
+    openXR_camera.params_[2] = cx;
+    openXR_camera.params_[3] = cy;
+
+    // --- Store FoV (Option A - Requires Camera struct modification) ---
+    // openXR_camera.fov_ = fov; // Add XrFovf member to Camera struct
+
+    // --- Store Projection Matrix (Option C - Requires Camera struct modification) ---
+    // XrMatrix4x4f projMatrix;
+    // createProjectionMatrixFromFov(&projMatrix, fov, nearZ, farZ); // Use utility function
+    // openXR_camera.projectionMatrix_ = ConvertXrMatrixToEigen(projMatrix); // Add Eigen::Matrix4f member
+
+    // --- Distortion ---
+    // No distortion for OpenXR virtual camera
+    openXR_camera.dist_coeff_ = cv::Mat::zeros(5, 1, CV_32F); // Set zero distortion
+
+    // --- Undistortion Map / Mask ---
+    // Not needed for OpenXR rendering target. Skip initUndistortRectifyMapAndMask.
+    // Leave openXR_camera.undistort_map1_, map2_, mask_ empty or null.
+
+    // --- Gaze Pyramid (Optional, based on target resolution) ---
+    openXR_camera.num_gaus_pyramid_sub_levels_ = num_gaus_pyramid_sub_levels_; // Use existing config
+    openXR_camera.gaus_pyramid_width_.resize(num_gaus_pyramid_sub_levels_);
+    openXR_camera.gaus_pyramid_height_.resize(num_gaus_pyramid_sub_levels_);
+    for (int l = 0; l < num_gaus_pyramid_sub_levels_; ++l) {
+        // Base pyramid on the OpenXR view resolution
+        openXR_camera.gaus_pyramid_width_[l] = openXR_camera.width_ * this->kf_gaus_pyramid_factors_[l];
+        openXR_camera.gaus_pyramid_height_[l] = openXR_camera.height_ * this->kf_gaus_pyramid_factors_[l];
+    }
+
+    // --- Stereo Parameters ---
+    // Not applicable
+
+    // --- Add to Scene ---
+    this->scene_->addCamera(openXR_camera);
+
+    // --- [Optional] Set as default viewer camera ---
+    // if (!viewer_camera_id_set_) { // Or perhaps always set it?
+         viewer_camera_id_xr_ = camera_id;
+//         viewer_camera_id_set_ = true;
+    // }
+
+    std::cout << "  Approximated Intrinsics (fx, fy, cx, cy): " 
+    << fx << ", " << fy << ", " << cx << ", " << cy << std::endl;
+
+    openXR_camera.undistort_mask = cv::Mat::ones(height, width, CV_32F);
+    
+    cv::Mat viewer_sub_undistort_mask;
+    int viewer_image_height_ = openXR_camera.height_ * rendered_image_viewer_scale_;
+    int viewer_image_width_ = openXR_camera.width_ * rendered_image_viewer_scale_;
+    cv::resize(openXR_camera.undistort_mask, viewer_sub_undistort_mask,
+               cv::Size(viewer_image_width_, viewer_image_height_));
+    viewer_sub_undistort_mask_[openXR_camera.camera_id_] =
+        tensor_utils::cvMat2TorchTensor_Float32(
+            viewer_sub_undistort_mask, device_type_);
+
+    cv::Mat viewer_main_undistort_mask;
+    int viewer_image_height_main_ = openXR_camera.height_ * rendered_image_viewer_scale_main_;
+    int viewer_image_width_main_ = openXR_camera.width_ * rendered_image_viewer_scale_main_;
+    cv::resize(openXR_camera.undistort_mask, viewer_main_undistort_mask,
+               cv::Size(viewer_image_width_main_, viewer_image_height_main_));
+    viewer_main_undistort_mask_[openXR_camera.camera_id_] =
+        tensor_utils::cvMat2TorchTensor_Float32(
+            viewer_main_undistort_mask, device_type_);
+
+}
+
 
 void GaussianMapper::trainColmap()
 {
@@ -1524,6 +1648,11 @@ cv::Mat GaussianMapper::renderFromPose(
     const int height,
     const bool main_vision)
 {
+
+    static auto last_log_time = std::chrono::steady_clock::now();
+    const auto log_interval = std::chrono::seconds(1); // Log every 5 seconds
+
+
     if (!initial_mapped_ || getIteration() <= 0)
         return cv::Mat(height, width, CV_32FC3, cv::Vec3f(0.0f, 0.0f, 0.0f));
     std::shared_ptr<GaussianKeyframe> pkf = std::make_shared<GaussianKeyframe>();
@@ -1537,8 +1666,37 @@ cv::Mat GaussianMapper::renderFromPose(
         // Camera
         Camera& camera = scene_->cameras_.at(viewer_camera_id_);
         pkf->setCameraParams(camera);
+
+                // Log camera intrinsics and extrinsics
+                auto current_time = std::chrono::steady_clock::now();
+                if (current_time - last_log_time >= log_interval) {
+                    std::ostringstream log_stream;
+                    log_stream << "[GaussianMapper::renderFromPose] Camera ID: " << camera.camera_id_ << std::endl;
+                    log_stream << "Intrinsics (fx, fy, cx, cy): "
+                               << camera.params_[0] << ", "
+                               << camera.params_[1] << ", "
+                               << camera.params_[2] << ", "
+                               << camera.params_[3] << std::endl;
+                    log_stream << "Extrinsics (Pose): " << std::endl
+                               << Tcw.matrix() << std::endl;
+                    logToFile(log_stream.str());
+                    last_log_time = current_time;
+                }
+
+        cout << viewer_camera_id_ << endl;
         // Transformations
         pkf->computeTransformTensors();
+        if (current_time - last_log_time >= log_interval) {
+            std::ostringstream log_stream;
+            log_stream << "[GaussianMapper::renderFromPose] Transformation Tensors:" << std::endl;
+            log_stream << "World-View Transform:" << std::endl
+                       << pkf->world_view_transform_ << std::endl;
+            log_stream << "Full Projection Transform:" << std::endl
+                       << pkf->full_proj_transform_ << std::endl;
+            log_stream << "Camera Center:" << std::endl
+                       << pkf->camera_center_ << std::endl;
+            logToFile(log_stream.str());
+        }
     }
     catch (std::out_of_range) {
         throw std::runtime_error("[GaussianMapper::renderFromPose]KeyFrame Camera not found!");
@@ -1559,6 +1717,139 @@ cv::Mat GaussianMapper::renderFromPose(
         );
     }
 
+    auto current_time = std::chrono::steady_clock::now();
+    if (current_time - last_log_time >= log_interval) {
+        std::ostringstream log_stream;
+        log_stream << "[GaussianMapper::renderFromPose] Render Package:" << std::endl;
+        log_stream << "Rendered Image Tensor Shape: " << std::get<0>(render_pkg).sizes() << std::endl;
+        log_stream << "Viewspace Points Tensor Shape: " << std::get<1>(render_pkg).sizes() << std::endl;
+        log_stream << "Visibility Filter Tensor Shape: " << std::get<2>(render_pkg).sizes() << std::endl;
+        log_stream << "Radii Tensor Shape: " << std::get<3>(render_pkg).sizes() << std::endl;
+        logToFile(log_stream.str());
+    }
+
+    // Check if the rendered image tensor is valid
+    if (!std::get<0>(render_pkg).defined()) {
+        throw std::runtime_error("[GaussianMapper::renderFromPose] Rendered image tensor is undefined.");
+    }
+
+    // Check if the undistort mask exists
+    if (!viewer_main_undistort_mask_.count(pkf->camera_id_)) {
+        throw std::runtime_error("[GaussianMapper::renderFromPose] viewer_main_undistort_mask_ not initialized for camera_id: " + std::to_string(pkf->camera_id_));
+    }
+
+        
+    // Result
+    torch::Tensor masked_image;
+    if (main_vision)
+        masked_image = std::get<0>(render_pkg) * viewer_main_undistort_mask_[pkf->camera_id_];
+    else
+        masked_image = std::get<0>(render_pkg) * viewer_sub_undistort_mask_[pkf->camera_id_];
+    return tensor_utils::torchTensor2CvMat_Float32(masked_image);
+}
+
+
+cv::Mat GaussianMapper::renderFromPoseXR(
+    const Sophus::SE3f &Tcw,
+    const int width,
+    const int height,
+    const bool main_vision)
+{
+    static auto last_log_time = std::chrono::steady_clock::now();
+    const auto log_interval = std::chrono::seconds(1); // Log every 5 seconds
+
+
+    if (!initial_mapped_ || getIteration() <= 0)
+        return cv::Mat(height, width, CV_32FC3, cv::Vec3f(0.0f, 0.0f, 0.0f));
+    std::shared_ptr<GaussianKeyframe> pkf = std::make_shared<GaussianKeyframe>();
+    pkf->zfar_ = z_far_;
+    pkf->znear_ = z_near_;
+    // Pose
+    pkf->setPose(
+        Tcw.unit_quaternion().cast<double>(),
+        Tcw.translation().cast<double>());
+    try {
+        // Camera
+        Camera& camera = scene_->cameras_.at(viewer_camera_id_xr_);
+        pkf->setCameraParams(camera);
+        cout << viewer_camera_id_xr_ << endl;
+
+        // Log camera intrinsics and extrinsics
+        auto current_time = std::chrono::steady_clock::now();
+        if (current_time - last_log_time >= log_interval) {
+            std::ostringstream log_stream;
+            log_stream << "[GaussianMapper::renderFromPose] Camera ID: " << camera.camera_id_<< std::endl;
+            log_stream << "Intrinsics (fx, fy, cx, cy): "
+                        << camera.params_[0] << ", "
+                        << camera.params_[1] << ", "
+                        << camera.params_[2] << ", "
+                        << camera.params_[3] << std::endl;
+            log_stream << "Extrinsics (Pose): " << std::endl
+                        << Tcw.matrix() << std::endl;
+            logToFile(log_stream.str());
+            last_log_time = current_time;
+        }
+        
+        // Transformations
+        pkf->computeTransformTensors();
+
+        // Log transformation tensors
+        if (current_time - last_log_time >= log_interval) {
+            std::ostringstream log_stream;
+            log_stream << "[GaussianMapper::renderFromPose] Transformation Tensors:" << std::endl;
+            log_stream << "World-View Transform:" << std::endl
+                       << pkf->world_view_transform_ << std::endl;
+            log_stream << "Full Projection Transform:" << std::endl
+                       << pkf->full_proj_transform_ << std::endl;
+            log_stream << "Camera Center:" << std::endl
+                       << pkf->camera_center_ << std::endl;
+            logToFile(log_stream.str());
+        }
+
+    }
+    catch (std::out_of_range) {
+        throw std::runtime_error("[GaussianMapper::renderFromPose]KeyFrame Camera not found!");
+    }
+
+    std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> render_pkg;
+    {
+        std::unique_lock<std::mutex> lock_render(mutex_render_);
+        // Render
+        render_pkg = GaussianRenderer::render(
+            pkf,
+            height,
+            width,
+            gaussians_,
+            pipe_params_,
+            background_,
+            override_color_
+        );
+    }
+
+    // Log render_pkg tensors
+    auto current_time = std::chrono::steady_clock::now();
+    if (current_time - last_log_time >= log_interval) {
+        std::ostringstream log_stream;
+        log_stream << "[GaussianMapper::renderFromPose] Render Package:" << std::endl;
+        log_stream << "Rendered Image Tensor Shape: " << std::get<0>(render_pkg).sizes() << std::endl;
+        log_stream << "Viewspace Points Tensor Shape: " << std::get<1>(render_pkg).sizes() << std::endl;
+        log_stream << "Visibility Filter Tensor Shape: " << std::get<2>(render_pkg).sizes() << std::endl;
+        log_stream << "Radii Tensor Shape: " << std::get<3>(render_pkg).sizes() << std::endl;
+        logToFile(log_stream.str());
+    }
+    
+
+    // Check if the rendered image tensor is valid
+    if (!std::get<0>(render_pkg).defined()) {
+        throw std::runtime_error("[GaussianMapper::renderFromPose] Rendered image tensor is undefined.");
+    }
+
+    // Check if the undistort mask exists
+    if (!viewer_main_undistort_mask_.count(pkf->camera_id_)) {
+        throw std::runtime_error("[GaussianMapper::renderFromPose] viewer_main_undistort_mask_ not initialized for camera_id: " + std::to_string(pkf->camera_id_));
+    }
+
+        
     // Result
     torch::Tensor masked_image;
     if (main_vision)
